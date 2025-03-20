@@ -5,10 +5,66 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler, ConversationHandler, ContextTypes
 from telegram.error import BadRequest
 from django.conf import settings
-from .models import Client
+from .models import Clients
+import httpx
+import asyncio
+
+VPN_BASE_URL = "https://185.125.203.136:58845/ABPwPgIi2fiDV1uS0LKi5Q/access-keys/"
+
+async def create_vpn_key(name: str = "Активирован") -> dict:
+    """
+    Создает новый ключ доступа через VPN-сервис и возвращает данные ключа.
+    """
+    async with httpx.AsyncClient(verify=False) as client:
+        # Отправляем POST-запрос для создания нового ключа
+        try:
+            post_response = await client.post(VPN_BASE_URL)
+            post_response.raise_for_status()
+            key_data = post_response.json()
+        except Exception as e:
+            logger.error(f"Ошибка при создании VPN-ключа: {e}")
+            return {}
+        
+        # Присваиваем имя, используя переданное значение
+        try:
+            key_id = key_data.get("id")
+            if not key_id:
+                logger.error("Ошибка: key_id отсутствует в ответе API")
+                return {}
+            if key_id:
+                put_url = f"{VPN_BASE_URL}{key_id}/name"
+                put_response = await client.put(put_url, json={"name": name})
+                put_response.raise_for_status()
+                # Обновляем данные ключа, если API возвращает обновленные данные
+                key_data.update(put_response.json())
+        except Exception as e:
+            logger.warning(f"Не удалось задать имя для ключа: {e}")
+            # Если присвоение имени не критично – можно продолжить
+        
+        try:
+            # Предполагаем, что key_data содержит все необходимые поля:
+            vpn_key, created = Clients.objects.update_or_create(
+                vpn_id=key_data.get("id"),
+                defaults={
+                    "name": key_data.get("name", name),
+                    "password": key_data.get("password", ""),
+                    "port": key_data.get("port", 0),
+                    "method": key_data.get("method", ""),
+                    "access_url": key_data.get("accessUrl", "")
+                }
+            )
+            logger.info(f"VPN-ключ сохранен: {vpn_key}")
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении VPN-ключа в базе: {e}")
+
+        return key_data
+
+    
+
+
 
 DB_CONFIG = settings.DB_CONFIG
-ADMIN_IDS = settings.ADMIN_IDS
+ADMIN_IDS = [795347299]
 CHANNEL_ID = settings.CHANNEL_ID
 YOUR_CHAT_ID = settings.YOUR_CHAT_ID
 TOKEN = settings.TOKEN
@@ -36,11 +92,12 @@ async def is_user_subscribed(user_id: int, context: ContextTypes.DEFAULT_TYPE) -
 
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    logger.info(f"/start вызван пользователем: {update.message.from_user.id}")
     user_id = update.message.from_user.id
     is_subscribed = await is_user_subscribed(user_id, context)
 
     if not is_subscribed:
-        await update.message.reply_text("Пожалуйста, подпишитесь на наш канал, чтобы продолжить.")
+        await update.message.reply_text("Пожалуйста, подпишитесь на наш канал https://t.me/ArtBasilioLife, чтобы продолжить.")
         return ConversationHandler.END
 
     # Уведомление администратора о новом подписчике
@@ -56,12 +113,29 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Выберите действие:", reply_markup=reply_markup)
     return GET_SERVICE
 
+
 # Обработка нажатия кнопки "Получить услугу"
 async def get_service(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text("Пожалуйста, введите ваше имя:")
-    return GET_INFO
+
+    username = query.from_user.username if query.from_user.username else "Активирован"
+
+
+    # Вызов функции создания VPN-ключа
+    key_data = await create_vpn_key(name=username)
+    if not key_data:
+        await query.edit_message_text("Ошибка: не удалось создать VPN-ключ.")
+        return ConversationHandler.END
+
+    # Формируем сообщение с информацией ключа
+    # Здесь можно выбрать нужное поле, например accessUrl
+    access_url = key_data.get("accessUrl", "Нет данных")
+    message = f"Ваш ключ активации VPN-сервиса:\n\n{access_url}"
+
+    await query.edit_message_text(message)
+    return ConversationHandler.END
+
 
 # Получение информации от пользователя
 async def get_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -73,7 +147,7 @@ async def get_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.message.from_user.id
 
     # Сохранение информации в базу данных
-    Client.objects.create(user_id=user_id, info=user_info)
+    Clients.objects.create(user_id=user_id, info=user_info)
 
     # Уведомление администратора
     try:
@@ -95,7 +169,7 @@ async def clients(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     # Получение списка клиентов из базы данных
-    clients_list = Client.objects.all()
+    clients_list = Clients.objects.all()
 
     logger.info(f"Список клиентов: {clients_list}")  # Логирование списка клиентов
 
@@ -104,7 +178,7 @@ async def clients(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     # Создание inline-кнопок для каждого клиента
-    keyboard = [[InlineKeyboardButton(client[1], callback_data=f'client_{client[0]}')] for client in clients_list]
+    keyboard = [[InlineKeyboardButton(client.name, callback_data=f'client_{client.user_id}')] for client in clients_list]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text("Выберите клиента:", reply_markup=reply_markup)
 
