@@ -1,57 +1,77 @@
 import logging
-import mysql.connector
 from functools import lru_cache
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler, ConversationHandler, ContextTypes
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, filters,
+    CallbackQueryHandler, ConversationHandler, ContextTypes
+)
 from telegram.error import BadRequest
 from django.conf import settings
-from .models import Clients
+from .models import Clients  # Модель для хранения VPN-ключей и/или заявок
 import httpx
 import asyncio
+from asgiref.sync import sync_to_async
 
 VPN_BASE_URL = "https://185.125.203.136:58845/ABPwPgIi2fiDV1uS0LKi5Q/access-keys/"
 
-async def create_vpn_key(name: str = "Активирован") -> dict:
-    """
-    Создает новый ключ доступа через VPN-сервис и возвращает данные ключа.
-    """
+# Состояния для ConversationHandler (пользовательская часть)
+STATE_USER_REQUEST = 1  # пользователь нажал "Подать заявку"
+GET_INFO = 2  # новое состояние для получения информации
+# Логирование
+logging.basicConfig(
+    filename='bot.log', 
+    level=logging.INFO, 
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Настройки из settings
+DB_CONFIG = settings.DB_CONFIG
+ADMIN_IDS = settings.ADMIN_IDS # Обязательно список
+CHANNEL_ID = settings.CHANNEL_ID
+YOUR_CHAT_ID = settings.YOUR_CHAT_ID  # ID, куда отправлять уведомления для админа
+TOKEN = settings.TOKEN
+
+# Функция для создания VPN-ключа через VPN-сервис
+async def create_vpn_key(name: str) -> dict:
     async with httpx.AsyncClient(verify=False) as client:
-        # Отправляем POST-запрос для создания нового ключа
         try:
             post_response = await client.post(VPN_BASE_URL)
             post_response.raise_for_status()
             key_data = post_response.json()
         except Exception as e:
-            logger.error(f"Ошибка при создании VPN-ключа: {e}")
+            logger.error(f"Ошибка при создании VPN-ключа (POST): {e}")
             return {}
-        
-        # Присваиваем имя, используя переданное значение
+
         try:
             key_id = key_data.get("id")
             if not key_id:
                 logger.error("Ошибка: key_id отсутствует в ответе API")
                 return {}
-            if key_id:
-                put_url = f"{VPN_BASE_URL}{key_id}/name"
-                put_response = await client.put(put_url, json={"name": name})
-                put_response.raise_for_status()
-                # Обновляем данные ключа, если API возвращает обновленные данные
-                key_data.update(put_response.json())
+            put_url = f"{VPN_BASE_URL}{key_id}/name"
+            put_response = await client.put(put_url, json={"name": name})
+            put_response.raise_for_status()
+            try:
+                updated_data = put_response.json()
+                key_data.update(updated_data)
+            except Exception:
+                logger.warning("PUT запрос вернул пустой ответ, продолжаем с данными из POST запроса.")
         except Exception as e:
             logger.warning(f"Не удалось задать имя для ключа: {e}")
-            # Если присвоение имени не критично – можно продолжить
-        
+
+        # Если API не возвращает дополнительные поля, можно установить их вручную или использовать данные из POST‑ответа
+        defaults = {
+            "name": key_data.get("name") or name,
+            "password": key_data.get("password", ""),  # задайте значение по умолчанию, если необходимо
+            "port": key_data.get("port", 0),  # значение по умолчанию, если API не возвращает порт
+            "method": key_data.get("method", ""),
+            "access_url": key_data.get("accessUrl", ""),
+        }
+
         try:
-            # Предполагаем, что key_data содержит все необходимые поля:
-            vpn_key, created = Clients.objects.update_or_create(
-                vpn_id=key_data.get("id"),
-                defaults={
-                    "name": key_data.get("name", name),
-                    "password": key_data.get("password", ""),
-                    "port": key_data.get("port", 0),
-                    "method": key_data.get("method", ""),
-                    "access_url": key_data.get("accessUrl", "")
-                }
+            vpn_key, created = await sync_to_async(Clients.objects.update_or_create)(
+                vpn_id=str(key_data.get("id")),
+                defaults=defaults
             )
             logger.info(f"VPN-ключ сохранен: {vpn_key}")
         except Exception as e:
@@ -59,28 +79,8 @@ async def create_vpn_key(name: str = "Активирован") -> dict:
 
         return key_data
 
-    
 
-
-
-DB_CONFIG = settings.DB_CONFIG
-ADMIN_IDS = [795347299]
-CHANNEL_ID = settings.CHANNEL_ID
-YOUR_CHAT_ID = settings.YOUR_CHAT_ID
-TOKEN = settings.TOKEN
-
-# Состояния для ConversationHandler
-GET_SERVICE, GET_INFO = range(2)
-
-# Логирование
-logging.basicConfig(filename='bot.log', level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-# Проверка, является ли пользователь администратором
-def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
-
-# Кэширование проверки подписки на 10 минут
+# Проверка подписки пользователя на канал (если необходимо)
 @lru_cache(maxsize=1000)
 async def is_user_subscribed(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
     try:
@@ -90,135 +90,161 @@ async def is_user_subscribed(user_id: int, context: ContextTypes.DEFAULT_TYPE) -
         logger.error(f"Ошибка при проверке подписки: {e}")
         return False
 
-# Команда /start
+# Команда /start – пользователь начинает диалог
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     logger.info(f"/start вызван пользователем: {update.message.from_user.id}")
     user_id = update.message.from_user.id
-    is_subscribed = await is_user_subscribed(user_id, context)
 
-    if not is_subscribed:
-        await update.message.reply_text("Пожалуйста, подпишитесь на наш канал https://t.me/ArtBasilioLife, чтобы продолжить.")
+    # (Опционально) проверка подписки
+    if not await is_user_subscribed(user_id, context):
+        await update.message.reply_text(
+            "Пожалуйста, подпишитесь на наш канал https://t.me/ArtBasilioLife, чтобы продолжить."
+        )
         return ConversationHandler.END
 
-    # Уведомление администратора о новом подписчике
-    try:
-        await context.bot.send_message(chat_id=YOUR_CHAT_ID, text=f"Новый подписчик: {update.message.from_user.username} (ID: {user_id})")
-    except BadRequest as e:
-        logger.error(f"Ошибка при отправке уведомления администратору: {e}")
-    except Exception as e:
-        logger.error(f"Неизвестная ошибка: {e}")
-
-    keyboard = [[InlineKeyboardButton("Получить услугу", callback_data='get_service')]]
+    # Предлагаем подать заявку на получение VPN-ключа
+    keyboard = [[InlineKeyboardButton("Подать заявку", callback_data="user_request")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Выберите действие:", reply_markup=reply_markup)
-    return GET_SERVICE
+    await update.message.reply_text("Нажмите кнопку, чтобы подать заявку на VPN доступ.", reply_markup=reply_markup)
+    return STATE_USER_REQUEST
 
-
-# Обработка нажатия кнопки "Получить услугу"
-async def get_service(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+# Обработка нажатия пользователем кнопки "Подать заявку"
+async def handle_user_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
 
-    username = query.from_user.username if query.from_user.username else "Активирован"
+    user = query.from_user
+    # Сохраняем или обновляем заявку в базе с информацией о пользователе
+    await sync_to_async(Clients.objects.update_or_create)(
+        user_id=user.id,
+        defaults={
+            "name": user.username or user.first_name,
+            "status": "pending"  # заявка подана и ожидает одобрения
+        }
+    ) 
 
+     # Сообщаем пользователю, что заявка отправлена
+    await query.edit_message_text("Ваша заявка отправлена на рассмотрение. Ожидайте ответа от администратора.")
 
-    # Вызов функции создания VPN-ключа
-    key_data = await create_vpn_key(name=username)
-    if not key_data:
-        await query.edit_message_text("Ошибка: не удалось создать VPN-ключ.")
-        return ConversationHandler.END
+    
 
-    # Формируем сообщение с информацией ключа
-    # Здесь можно выбрать нужное поле, например accessUrl
-    access_url = key_data.get("accessUrl", "Нет данных")
-    message = f"Ваш ключ активации VPN-сервиса:\n\n{access_url}"
+    # Отправляем уведомление администратору с заявкой
+    admin_keyboard = [
+        [
+            InlineKeyboardButton("Одобрить", callback_data=f"admin_approve_{user.id}"),
+            InlineKeyboardButton("Отклонить", callback_data=f"admin_reject_{user.id}")
+        ]
+    ]
+    admin_reply = InlineKeyboardMarkup(admin_keyboard)
+    try:
+        await context.bot.send_message(
+            chat_id=YOUR_CHAT_ID,
+            text=f"Заявка: пользователь @{user.username or user.first_name} (ID: {user.id}) запросил VPN доступ.",
+            reply_markup=admin_reply
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отправке заявки администратору: {e}")
 
-    await query.edit_message_text(message)
     return ConversationHandler.END
 
+# Обработка решения администратора
+async def handle_admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
 
-# Получение информации от пользователя
+    data = query.data
+    parts = data.split("_")
+    if len(parts) < 3:
+        await query.edit_message_text("Неверные данные заявки.")
+        return
+
+    decision, user_id_str = parts[1], parts[2]
+    try:
+        user_id = int(user_id_str)
+    except ValueError:
+        await query.edit_message_text("Неверный ID пользователя.")
+        return
+
+    # Используем await, чтобы вызвать асинхронно
+    if decision == "approve":
+        # Получаем заявку (объект Clients) по user_id
+        try:
+            client_obj = await sync_to_async(Clients.objects.get)(user_id=user_id)
+        except Clients.DoesNotExist:
+            await query.edit_message_text("Ошибка: заявка не найдена в базе.")
+            return
+
+
+        key_data = await create_vpn_key(name=client_obj.name)
+        if not key_data:
+            await query.edit_message_text("Ошибка: не удалось создать VPN-ключ.")
+            return
+
+        # Обновляем запись заявки с данными VPN-ключа и меняем статус на "approved"
+        vpn_id = str(key_data.get("id"))
+        access_url = key_data.get("accessUrl", "")
+        password = key_data.get("password", "")
+        port = key_data.get("port", 0)
+        method = key_data.get("method", "")
+
+        await sync_to_async(Clients.objects.filter(user_id=user_id).update)(
+            vpn_id=vpn_id,
+            access_url=access_url,
+            password=password,
+            port=port,
+            method=method,
+            status="approved"
+        )
+
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=f"Ваша заявка одобрена!\nВаш ключ активации VPN-сервиса:\n\n{access_url}"
+            )
+            await query.edit_message_text("Заявка одобрена и ключ отправлен пользователю.")
+        except Exception as e:
+            logger.error(f"Ошибка при отправке ключа пользователю: {e}")
+            await query.edit_message_text("Ошибка при отправке ключа пользователю.")
+    elif decision == "reject":
+        # Обновляем заявку, устанавливая статус "rejected"
+        await sync_to_async(Clients.objects.filter(user_id=user_id).update)(status="rejected")
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="Ваша заявка на VPN доступ отклонена администрацией."
+            )
+            await query.edit_message_text("Заявка отклонена и уведомление отправлено пользователю.")
+        except Exception as e:
+            logger.error(f"Ошибка при отправке уведомления об отклонении: {e}")
+            await query.edit_message_text("Ошибка при отправке уведомления об отклонении.")
+    else:
+        await query.edit_message_text("Неверное решение.")
+
+    
+# Получение информации от пользователя (если используется, можно убрать, если не нужно)
 async def get_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not update.message or not update.message.text:
         await update.message.reply_text("Пожалуйста, введите корректные данные.")
-        return GET_INFO
+        return ConversationHandler.END
 
     user_info = update.message.text
     user_id = update.message.from_user.id
 
-    # Сохранение информации в базу данных
-    Clients.objects.create(user_id=user_id, info=user_info)
+    # Пример сохранения дополнительной информации, если требуется
+    #await sync_to_async(Clients.objects.create)(user_id=user_id, info=user_info)
 
-    # Уведомление администратора
+
     try:
-        await context.bot.send_message(chat_id=YOUR_CHAT_ID, text=f"Новый запрос от пользователя {user_id}: {user_info}")
+        await context.bot.send_message(
+            chat_id=YOUR_CHAT_ID, 
+            text=f"Новый запрос от пользователя {user_id}: {user_info}"
+        )
     except BadRequest as e:
         logger.error(f"Ошибка при отправке уведомления администратору: {e}")
     except Exception as e:
         logger.error(f"Неизвестная ошибка: {e}")
 
-    # Подтверждение клиенту
     await update.message.reply_text("Ожидайте, информация принята.")
-    return ConversationHandler.END
-
-# Команда /clients для администратора
-async def clients(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.message.from_user.id
-    if not is_admin(user_id):
-        await update.message.reply_text("У вас нет прав для выполнения этой команды.")
-        return
-
-    # Получение списка клиентов из базы данных
-    clients_list = Clients.objects.all()
-
-    logger.info(f"Список клиентов: {clients_list}")  # Логирование списка клиентов
-
-    if not clients_list:
-        await update.message.reply_text("Список клиентов пуст.")
-        return
-
-    # Создание inline-кнопок для каждого клиента
-    keyboard = [[InlineKeyboardButton(client.name, callback_data=f'client_{client.user_id}')] for client in clients_list]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Выберите клиента:", reply_markup=reply_markup)
-
-# Обработка выбора клиента
-async def select_client(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-
-    # Получение client_id из callback_data
-    client_id = query.data.split('_')[1]
-    context.user_data['client_id'] = client_id
-
-    # Запрос текста сообщения
-    await query.edit_message_text("Введите текст ответа:")
-    return GET_INFO
-
-# Отправка сообщения клиенту
-async def send_response(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if not update.message or not update.message.text:
-        await update.message.reply_text("Пожалуйста, введите текст ответа.")
-        return GET_INFO
-
-    response_text = update.message.text
-    client_id = context.user_data.get('client_id')
-
-    if not client_id:
-        await update.message.reply_text("Ошибка: клиент не выбран.")
-        return ConversationHandler.END
-
-    # Отправка сообщения клиенту
-    try:
-        await context.bot.send_message(chat_id=client_id, text=response_text)
-        await update.message.reply_text("Ответ отправлен.")
-    except BadRequest as e:
-        logger.error(f"Ошибка при отправке ответа клиенту: {e}")
-        await update.message.reply_text("Ошибка: не удалось отправить сообщение.")
-    except Exception as e:
-        logger.error(f"Неизвестная ошибка: {e}")
-        await update.message.reply_text("Произошла неизвестная ошибка.")
-
     return ConversationHandler.END
 
 # Команда /cancel
@@ -228,26 +254,25 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 # Обработка ошибок
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error(msg="Exception while handling an update:", exc_info=context.error)
+    logger.error("Exception while handling an update:", exc_info=context.error)
 
 # Основная функция
 def main() -> None:
     application = Application.builder().token(settings.TOKEN).build()
 
-
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
-            GET_SERVICE: [CallbackQueryHandler(get_service, pattern='^get_service$')],
+            STATE_USER_REQUEST: [CallbackQueryHandler(handle_user_request, pattern='^user_request$')],
+            # GET_INFO можно использовать, если требуется ввод дополнительной информации от пользователя
             GET_INFO: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_info)]
         },
         fallbacks=[CommandHandler('cancel', cancel)]
     )
 
     application.add_handler(conv_handler)
-    application.add_handler(CommandHandler('clients', clients))
-    application.add_handler(CallbackQueryHandler(select_client, pattern='^client_'))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, send_response))
+    application.add_handler(CallbackQueryHandler(handle_admin_decision, pattern='^admin_'))
+    # Можно добавить другие обработчики по необходимости
     application.add_error_handler(error_handler)
 
     application.run_polling()
