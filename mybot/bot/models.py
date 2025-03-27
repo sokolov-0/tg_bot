@@ -8,6 +8,7 @@ class Clients(models.Model):
     port = models.IntegerField(verbose_name="Порт", null=True, blank=True, default=0)
     method = models.CharField(max_length=100, verbose_name="Метод шифрования")
     access_url = models.TextField(blank=True, null=True)
+    tariff = models.CharField(max_length=50, blank=True, null=True)
     status = models.CharField(
         max_length=20,
         choices=[
