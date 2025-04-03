@@ -22,8 +22,10 @@ DB_CONFIG = {
     'database': os.getenv("DB_NAME"),
 }
 ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS").split(",")))
+
 CHANNEL_ID = os.getenv("CHANNEL_ID")
-YOUR_CHAT_ID = int(os.getenv("YOUR_CHAT_ID"))
+YOUR_CHAT_ID = list(map(int, os.getenv("YOUR_CHAT_ID").split(",")))
+
 
 
 
@@ -45,6 +47,10 @@ DEBUG = True
 ALLOWED_HOSTS = []
 
 
+CRONJOBS = [
+    ('0 8 * * *', 'django.core.management.call_command', ['check_subscriptions']),
+]
+
 # Application definition
 
 INSTALLED_APPS = [
@@ -54,8 +60,10 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django_crontab',
     'bot',
     'httpx',
+    'dateutil',
 ]
 
 MIDDLEWARE = [

@@ -6,11 +6,16 @@ from asgiref.sync import sync_to_async
 from django.conf import settings
 from bot.models import Clients
 from bot.vpn_service import create_vpn_key
+from mybot.settings import ADMIN_IDS
 
 logger = logging.getLogger(__name__)
 YOUR_CHAT_ID = settings.YOUR_CHAT_ID
 
 async def handle_admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.callback_query.from_user.id not in ADMIN_IDS:
+        await update.callback_query.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
+        return
+
     query = update.callback_query
     await query.answer()
     data = query.data.split("_")
@@ -94,11 +99,12 @@ async def notify_admin(user, context: ContextTypes.DEFAULT_TYPE):
         ]
     ]
     admin_markup = InlineKeyboardMarkup(admin_keyboard)
-    try:
-        await context.bot.send_message(
-            chat_id=YOUR_CHAT_ID,
-            text=f"Заявка: пользователь @{user.username or user.first_name} (ID: {user.id}) запросил VPN доступ.",
-            reply_markup=admin_markup
-        )
-    except Exception as e:
-        logger.error(f"Ошибка при отправке уведомления администратору: {e}")
+    for admin_id in ADMIN_IDS:
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=f"Заявка: пользователь @{user.username or user.first_name} (ID: {user.id}) запросил VPN доступ.",
+                reply_markup=admin_markup
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при отправке уведомления админу {admin_id}: {e}")
