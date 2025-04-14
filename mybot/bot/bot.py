@@ -2,7 +2,7 @@
 import logging
 from telegram.ext import Application, CommandHandler, ConversationHandler, CallbackQueryHandler
 from django.conf import settings
-
+from bot.handlers import handle_renewal_choice 
 from bot.handlers import start, handle_user_request, handle_tariff_selection, cancel
 from bot.admin_handlers import handle_admin_decision
 from bot.utils import GET_STATE_USER_REQUEST, GET_STATE_TARIFF
@@ -15,6 +15,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TOKEN = settings.TOKEN
+
 
 def main() -> None:
     application = Application.builder().token(TOKEN).build()
@@ -36,6 +37,12 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(handle_admin_decision, pattern='^admin_'))
     # Глобальный обработчик для тарифов, чтобы поймать callback даже после завершения разговора
     application.add_handler(CallbackQueryHandler(handle_tariff_selection, pattern='^tariff_'))
+    application.add_handler(
+        CallbackQueryHandler(
+            handle_renewal_choice, 
+            pattern=r"^renew_(yes|no)_\d+$"
+        )
+    )
 
     application.run_polling()
 

@@ -9,6 +9,8 @@ from bot.vpn_service import create_vpn_key
 from bot.utils import is_user_subscribed
 from bot.admin_handlers import notify_admin
 from django.utils import timezone
+from telegram.ext import CallbackQueryHandler
+from bot.admin_handlers import get_tariff_keyboard 
 
 logger = logging.getLogger(__name__)
 
@@ -41,83 +43,116 @@ async def handle_user_request(update: Update, context: ContextTypes.DEFAULT_TYPE
     await notify_admin(user, context)
     return ConversationHandler.END
 
+
+
+
+async def handle_renewal_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        data = query.data.split("_")
+        action, user_id = data[1], int(data[2])
+    except (IndexError, ValueError):
+        await query.edit_message_text("Ошибка обработки запроса")
+        return
+    
+    try:
+        if action == "yes":
+            tariff_markup = get_tariff_keyboard(user_id)
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="Выберите тариф для продления подписки:",
+                reply_markup=tariff_markup
+            )
+            await query.edit_message_text("✅ Вы выбрали продлить подписку.")
+        else:
+            await query.edit_message_text("❌ Вы отказались от продления подписки.")
+            # Здесь можно добавить логику отключения
+    except Exception as e:
+        logger.error(f"Ошибка в обработке продления: {e}")
+        await query.edit_message_text("⚠️ Произошла ошибка при обработке запроса")
+
+
+
 # Обработка выбора тарифа
 async def handle_tariff_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
     data = query.data.split("_")
+    
     if len(data) < 3:
         await query.edit_message_text("Ошибка: некорректные данные тарифа.")
         return ConversationHandler.END
 
     tariff_code, user_id_str = data[1], data[2]
+    
     try:
         user_id = int(user_id_str)
     except ValueError:
         await query.edit_message_text("Ошибка: неверный ID пользователя.")
         return ConversationHandler.END
 
-    # Преобразуем код тарифа в понятное значение и в текст для сообщения
-    if tariff_code == "1month":
-        tariff_text = "1 месяц"
-        tariff_display = "Один месяц."
-    elif tariff_code == "3months":
-        tariff_text = "3 месяца"
-        tariff_display = "Три месяца."
-    elif tariff_code == "6months":
-        tariff_text = "6 месяцев"
-        tariff_display = "Полгода."
-    else:
-        tariff_text = tariff_code
-        tariff_display = tariff_code
+    # Определяем выбранный тариф
+    tariff_map = {
+        "1month": ("1 месяц", "Один месяц"),
+        "3months": ("3 месяца", "Три месяца"),
+        "6months": ("6 месяцев", "Полгода")
+    }
+    
+    if tariff_code not in tariff_map:
+        await query.edit_message_text("Ошибка: недопустимый тариф.")
+        return ConversationHandler.END
+        
+    tariff_text, tariff_display = tariff_map[tariff_code]
 
     try:
+        # Получаем и обновляем запись клиента
         client_obj = await sync_to_async(Clients.objects.get)(user_id=user_id)
+        client_obj.tariff = tariff_text
+        client_obj.status = "approved"  # Критически важная строка!
+        
+        # Сохраняем изменения (автоматически вызовется renew_subscription)
+        await sync_to_async(client_obj.save)()
+        
     except Clients.DoesNotExist:
         await query.edit_message_text("Ошибка: клиент не найден.")
         return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Ошибка обновления подписки: {e}")
+        await query.edit_message_text("Ошибка при обновлении подписки.")
+        return ConversationHandler.END
 
-    # Устанавливаем тариф и дату начала подписки, если еще не установлены.
-    client_obj.tariff = tariff_text
-    if not client_obj.subscription_start_date:
-        client_obj.subscription_start_date = timezone.now().date()
-    # При сохранении автоматически установится subscription_end_date, если модель реализует эту логику.
-    await sync_to_async(client_obj.save)()
+    # Форматирование дат для сообщения
+    start_date = client_obj.subscription_start_date.strftime('%-d %B %Y г.') if client_obj.subscription_start_date else "не установлена"
+    end_date = client_obj.subscription_end_date.strftime('%-d %B %Y г.') if client_obj.subscription_end_date else "не установлена"
 
-    # Если даты подписки не установлены, задаем значения по умолчанию для вывода (чтобы избежать ошибки)
-    start_date_str = (
-        client_obj.subscription_start_date.strftime('%-d %B %Y г.')
-        if client_obj.subscription_start_date else "не установлена"
-    )
-    end_date_str = (
-        client_obj.subscription_end_date.strftime('%-d %B %Y г.')
-        if client_obj.subscription_end_date else "не установлена"
-    )
-
-    # Проверяем наличие access_url
-    access_url = client_obj.access_url
-    if not access_url:
+    # Проверка access_url
+    if not client_obj.access_url:
         await query.edit_message_text("Ошибка: не найден accessUrl. Обратитесь в поддержку.")
         return ConversationHandler.END
 
-    # Формируем сообщение
-    from bot.instructions import INSTRUCTION_TEXT
-    message = (
-        f"Ваша заявка одобрена!\n\nТариф: {tariff_display}\n"
-        f"Подписка активирована с {start_date_str} до {end_date_str}\n\n"
-        f"Инструкция по подключению:\n{INSTRUCTION_TEXT}\n\n"
-        f"✅✅✅ Ваш accessUrl:\n{access_url}"
-    )
-
+    # Отправка сообщения пользователю
     try:
+        from bot.instructions import INSTRUCTION_TEXT
+        message = (
+            f"✅ Подписка обновлена!\n\n"
+            f"Тариф: {tariff_display}\n"
+            f"Новый период: с {start_date} до {end_date}\n\n"
+            f"{INSTRUCTION_TEXT}\n\n"
+            f"🔑 Ваш accessUrl:\n{client_obj.access_url}"
+        )
+        
         await context.bot.send_message(chat_id=user_id, text=message)
-        await query.edit_message_text("Инструкция и данные для подключения отправлены вам в личные сообщения.")
+        await query.edit_message_text("Данные для подключения отправлены в личные сообщения.")
+        
     except Exception as e:
-        logger.error(f"Ошибка при отправке данных пользователю: {e}")
-        await query.edit_message_text("Ошибка при отправке данных пользователю.")
-    
+        logger.error(f"Ошибка отправки сообщения: {e}")
+        await query.edit_message_text("Ошибка при отправке данных.")
+
     return ConversationHandler.END
 
+ 
 # Команда /cancel
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Диалог завершен.")

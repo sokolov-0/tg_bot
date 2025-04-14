@@ -11,6 +11,18 @@ from mybot.settings import ADMIN_IDS
 logger = logging.getLogger(__name__)
 YOUR_CHAT_ID = settings.YOUR_CHAT_ID
 
+def get_tariff_keyboard(user_id):
+    tariff_keyboard = [
+        [
+            InlineKeyboardButton("1 месяц - 100р", callback_data=f"tariff_1month_{user_id}"),
+            InlineKeyboardButton("3 месяца - 250р", callback_data=f"tariff_3months_{user_id}")
+        ],
+        [InlineKeyboardButton("6 месяцев - 500р", callback_data=f"tariff_6months_{user_id}")]
+    ]
+    return InlineKeyboardMarkup(tariff_keyboard)
+
+
+
 async def handle_admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.callback_query.from_user.id not in ADMIN_IDS:
         await update.callback_query.answer("У вас нет прав для выполнения этого действия.", show_alert=True)
@@ -59,14 +71,9 @@ async def handle_admin_decision(update: Update, context: ContextTypes.DEFAULT_TY
         )
 
         # После одобрения предлагаем выбрать тариф
-        tariff_keyboard = [
-            [
-                InlineKeyboardButton("1 месяц - 100р", callback_data=f"tariff_1month_{user_id}"),
-                InlineKeyboardButton("3 месяца - 250р", callback_data=f"tariff_3months_{user_id}")
-            ],
-            [InlineKeyboardButton("6 месяцев - 500р", callback_data=f"tariff_6months_{user_id}")]
-        ]
-        tariff_markup = InlineKeyboardMarkup(tariff_keyboard)
+        
+        tariff_markup = get_tariff_keyboard(user_id)
+        
         try:
             await context.bot.send_message(
                 chat_id=user_id,

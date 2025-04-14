@@ -38,11 +38,31 @@ class Clients(models.Model):
                 self.subscription_end_date = self.subscription_start_date + relativedelta(months=6)
 
             # Можно добавить другие тарифы по необходимости
+    
+    def renew_subscription(self):
+        """Обновляет даты подписки при продлении"""
+        now = timezone.now().date()
+        
+        # Если подписка еще активна, продлеваем от текущей конечной даты
+        if self.subscription_end_date and self.subscription_end_date >= now:
+            new_start = self.subscription_end_date
+        else:  # Если подписка истекла, начинаем с текущей даты
+            new_start = now
+        
+        # Рассчитываем новую конечную дату
+        if self.tariff == "1 месяц":
+            self.subscription_end_date = new_start + relativedelta(months=1)
+        elif self.tariff == "3 месяца":
+            self.subscription_end_date = new_start + relativedelta(months=3)
+        elif self.tariff == "6 месяцев":
+            self.subscription_end_date = new_start + relativedelta(months=6)
+        
+        # Обновляем начальную дату только при первом оформлении
+        if not self.subscription_start_date:
+            self.subscription_start_date = new_start
 
 
     def save(self, *args, **kwargs):
-        # Если подписка оформлена и указан тариф, автоматически вычисляем дату окончания
-        if self.subscription_start_date and self.tariff:
-            self.set_subscription_period()
+        if self.tariff and self.status == "approved":
+            self.renew_subscription()
         super().save(*args, **kwargs)
-
