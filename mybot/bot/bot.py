@@ -1,14 +1,24 @@
-from telegram.ext import Application, CommandHandler, ConversationHandler, CallbackQueryHandler
+import logging
+import asyncio
+from telegram.ext import (
+    Application, CommandHandler, ConversationHandler, CallbackQueryHandler
+)
 from django.conf import settings
-from bot.handlers import start, handle_user_request, handle_tariff_selection, cancel, handle_renewal_choice
+from bot.handlers import (
+    start,
+    handle_user_request,
+    handle_tariff_selection,
+    cancel,
+    handle_renewal_choice,
+    help_command,
+    subscription
+)
 from bot.admin_handlers import handle_admin_decision
 from bot.utils import GET_STATE_USER_REQUEST, GET_STATE_TARIFF
-import logging
-from bot.handlers import handle_user_request
 
 logging.basicConfig(
-    filename='bot.log', 
-    level=logging.INFO, 
+    filename='bot.log',
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -34,9 +44,25 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(handle_admin_decision, pattern='^admin_'))
     application.add_handler(CallbackQueryHandler(handle_renewal_choice, pattern=r"^renew_(yes|no)_\d+$"))
     application.add_handler(CallbackQueryHandler(handle_tariff_selection, pattern='^tariff_'))
-    # ★ Добавляем глобальный обработчик для "user_request":
+    application.add_handler(CommandHandler('help', help_command))
+    application.add_handler(CommandHandler('subscription', subscription))
+    # Глобальный обработчик для кнопки "Подать заявку"
     application.add_handler(CallbackQueryHandler(handle_user_request, pattern='^user_request$'))
-    
+
+    # Создаем новый event loop, чтобы он был доступен как текущий
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    async def set_commands():
+        commands = [
+            ("start", "🚀 Запуск бота "),
+            ("help", "⚙️ Информация техподдержки"),
+            ("subscription", "📊 Статус подписки")
+        ]
+        await application.bot.set_my_commands(commands)
+
+    loop.run_until_complete(set_commands())
+
     application.run_polling()
 
 if __name__ == '__main__':

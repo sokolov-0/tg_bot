@@ -11,6 +11,7 @@ from bot.admin_handlers import notify_admin
 from django.utils import timezone
 from telegram.ext import CallbackQueryHandler
 from bot.admin_handlers import get_tariff_keyboard 
+from babel.dates import format_date
 
 logger = logging.getLogger(__name__)
 
@@ -21,11 +22,77 @@ GET_STATE_TARIFF = 2
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.message.from_user.id
+    welcome_text = (
+        "Добро пожаловать! 👋\n\n"
+        "ArtBasilioBot – бот VPN-сервиса для безопасной передачи данных в сети интернет 🔒. Я помогаю вам получить доступ к VPN через простую заявку! \n"
+        "Вы можете подать заявку на подключение, выбрать понравившийся тариф, произвести оплату и получить VPN-ключ с инструкцией. ✅\n\n"
+        "Нажмите кнопку ниже, чтобы подать заявку. ⬇️"
+    )
     logger.info(f"/start вызван пользователем: {user_id}")
     keyboard = [[InlineKeyboardButton("Подать заявку", callback_data="user_request")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Нажмите кнопку, чтобы подать заявку на VPN доступ.", reply_markup=reply_markup)
+    await update.message.reply_text(welcome_text, reply_markup=reply_markup)
     return GET_STATE_USER_REQUEST
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    support_text = (
+        "Если у вас возникли проблемы или вопросы, пожалуйста, свяжитесь с нашей технической поддержкой:\n\n"
+        "Аккаунт поддержки: @sokolov_000000\n"
+        "Часы работы поддержки: с 09:00 до 18:00 по МСК\n\n"
+        "Мы постараемся ответить на ваше сообщение как можно скорее.❤️‍🩹"
+    )
+    await update.message.reply_text(support_text)
+
+# Команда /subscription – информация о подписке
+async def subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.message.from_user.id
+
+    try:
+        client = await sync_to_async(Clients.objects.get)(user_id=user_id)
+    except Clients.DoesNotExist:
+        # Если записи нет, значит пользователь пока не оформил подписку.
+        await update.message.reply_text("У вас пока нет активной подписки. Подайте заявку, чтобы получить доступ.")
+        return
+
+    today = timezone.now().date()
+    if client.subscription_end_date:
+        days_left = (client.subscription_end_date - today).days
+        formatted_end = format_date(client.subscription_end_date, format="d MMMM yyyy", locale="ru")
+    else:
+        days_left = None
+        formatted_end = "не установлена"
+
+    if days_left is None:
+        reply_text = "У вас пока не оформлена подписка."
+    elif days_left > 0:
+        reply_text = (
+            f"Ваша подписка активна и истекает {formatted_end}.\n"
+            f"До истечения подписки осталось {days_left} дней.\n"
+        )
+        # Если осталось менее 2 дней, предлагается продлить подписку
+        if days_left < 2:
+            reply_text += "Хотите продлить подписку?"
+            keyboard = [
+                [InlineKeyboardButton("✅ Да", callback_data=f"renew_yes_{user_id}")],
+                [InlineKeyboardButton("❌ Нет", callback_data=f"renew_no_{user_id}")]
+            ]
+            markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(reply_text, reply_markup=markup)
+            return
+    else:
+        # Подписка истекла
+        reply_text = (
+            "❌ Ваша подписка закончилась, вы больше не можете пользоваться VPN.\n"
+            "Чтобы продолжить, пожалуйста, подайте новую заявку."
+        )
+        keyboard = [
+            [InlineKeyboardButton("Подать заявку", callback_data="user_request")]
+        ]
+        markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(reply_text, reply_markup=markup)
+        return
+
+    await update.message.reply_text(reply_text)
 
 # Обработка заявки пользователя
 async def handle_user_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -42,6 +109,39 @@ async def handle_user_request(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.edit_message_text("Ваша заявка отправлена на рассмотрение. Ожидайте ответа от администратора.")
     await notify_admin(user, context)
     return ConversationHandler.END
+
+# Обработка выбора оплаты
+async def handle_payment_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Обрабатывает нажатие кнопки "Я оплатил".
+    Обновляет статус платежа и уведомляет пользователя, что проверка платежа ведётся.
+    """
+    query = update.callback_query
+    await query.answer()
+    data = query.data.split("_")
+    try:
+        # Ожидаем данные вида: "payment_done_{user_id}"
+        _, user_id_str = data[0], data[1]
+        user_id = int(user_id_str)
+    except (IndexError, ValueError):
+        await query.edit_message_text("Ошибка данных платежа.")
+        return ConversationHandler.END
+
+    # Обновляем статус платежа (например, ставим awaiting_verification)
+    try:
+        client = await sync_to_async(Clients.objects.get)(user_id=user_id)
+        client.payment_status = "awaiting_verification"
+        await sync_to_async(client.save)()
+    except Clients.DoesNotExist:
+        await query.edit_message_text("Ошибка: клиент не найден.")
+        return ConversationHandler.END
+
+    # Отправляем уведомление пользователю
+    await query.edit_message_text("Спасибо! Ваш платеж отмечен как выполненный. Администраторы проверят перевод, это может занять некоторое время.")
+    # Здесь можно уведомить админов о том, что пользователь оплатил, через отдельный механизм.
+    # Например: await notify_admin_payment(user, context)
+    return ConversationHandler.END
+
 
 
 
@@ -67,7 +167,8 @@ async def handle_renewal_choice(update: Update, context: ContextTypes.DEFAULT_TY
             )
             await query.edit_message_text("✅ Вы выбрали продлить подписку.")
         else:
-            await query.edit_message_text("❌ Вы отказались от продления подписки.")
+            await query.edit_message_text("⚠️ Вы отказались от продления подписки. Ваш доступ будет вскоре отключен.")
+            logger.info(f"Клиент {user_id} отказался от продления подписки.")
             # Здесь можно добавить логику отключения
     except Exception as e:
         logger.error(f"Ошибка в обработке продления: {e}")
