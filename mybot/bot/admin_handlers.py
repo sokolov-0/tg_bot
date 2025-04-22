@@ -148,45 +148,49 @@ async def handle_payment_confirmation(update: Update, context: ContextTypes.DEFA
     if query.from_user.id not in ADMIN_IDS:
         return await query.answer("Нет прав.", show_alert=True)
 
-    client = await sync_to_async(Clients.objects.get)(user_id=user_id)
+    # Забираем клиента
+    client_obj = await sync_to_async(Clients.objects.get)(user_id=user_id)
 
     if result == "success":
         # 1) Обновляем статус платежа
-        client.payment_status = "paid"
+        client_obj.payment_status = "paid"
 
         # 2) Рассчитываем новый период подписки
-        months = {"1 месяц":1, "3 месяца":3, "6 месяцев":6}.get(client.tariff, 0)
+        months = {"1 месяц": 1, "3 месяца": 3, "6 месяцев": 6}.get(client_obj.tariff, 0)
         today = timezone.now().date()
 
-        if client.subscription_end_date and client.subscription_end_date > today:
-            # продляем от текущего конца
-            new_start = client.subscription_start_date or today
-            new_end   = client.subscription_end_date + relativedelta(months=months)
+        if client_obj.subscription_end_date and client_obj.subscription_end_date > today:
+            # продление от текущего конца
+            new_start = client_obj.subscription_end_date
+            new_end = client_obj.subscription_end_date + relativedelta(months=months)
         else:
-            # первый платёж или истёкшая подписка
+            # первый платёж или просроченная подписка
             new_start = today
-            new_end   = today + relativedelta(months=months)
+            new_end = today + relativedelta(months=months)
 
-        client.subscription_start_date = new_start
-        client.subscription_end_date   = new_end
+        client_obj.subscription_start_date = new_start
+        client_obj.subscription_end_date = new_end
 
-        # 3) Сохраняем всё вместе
-        await sync_to_async(client.save)()
+        # 3) Сохраняем даты и статус
+        await sync_to_async(client_obj.save)()
 
-        # 4) Генерим VPN‑ключ
-        key_data = await create_vpn_key(name=client.name, user_id=client.user_id)
-        if not key_data:
-            return await query.edit_message_text("Ошибка создания VPN-ключа.")
-
-        await sync_to_async(
-            Clients.objects.filter(user_id=user_id).update
-        )(
-            vpn_id=str(key_data["id"]),
-            access_url=key_data["accessUrl"],
-            password=key_data["password"],
-            port=key_data["port"],
-            method=key_data["method"]
-        )
+        # 4) Генерируем ключ, только если его ещё нет
+        if not client_obj.access_url:
+            key_data = await create_vpn_key(name=client_obj.name, user_id=client_obj.user_id)
+            if not key_data:
+                return await query.edit_message_text("Ошибка создания VPN-ключа.")
+            await sync_to_async(
+                Clients.objects.filter(user_id=user_id).update
+            )(
+                vpn_id=str(key_data["id"]),
+                access_url=key_data["accessUrl"],
+                password=key_data["password"],
+                port=key_data["port"],
+                method=key_data["method"]
+            )
+            access_url = key_data["accessUrl"]
+        else:
+            access_url = client_obj.access_url
 
         # 5) Отправляем пользователю доступ
         from bot.instructions import INSTRUCTION_TEXT
@@ -195,18 +199,19 @@ async def handle_payment_confirmation(update: Update, context: ContextTypes.DEFA
             text=(
                 "✅ Платёж подтверждён!\n\n"
                 f"Ваш VPN доступ активен до {new_end.strftime('%d.%m.%Y')}.\n\n"
-                f"🔑 Ключ: {key_data['accessUrl']}\n\n"
+                f"🔑 Ключ: {access_url}\n\n"
                 f"{INSTRUCTION_TEXT}"
             )
         )
-        return await query.edit_message_text("Платёж подтверждён, клиенту отправлены данные.")
+        await query.edit_message_text("Платёж подтверждён, клиенту отправлены данные.")
 
     else:
         # Платёж не прошёл
-        client.payment_status = "failed"
-        await sync_to_async(client.save)()
+        client_obj.payment_status = "failed"
+        await sync_to_async(client_obj.save)()
         await context.bot.send_message(chat_id=user_id, text="Платёж не прошёл. Обратитесь в поддержку.")
-        return await query.edit_message_text("Платёж отклонён.")
+        await query.edit_message_text("Платёж отклонён.")
+
 
 async def notify_admin_payment(client_obj, context: ContextTypes.DEFAULT_TYPE):
     """

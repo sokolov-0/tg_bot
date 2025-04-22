@@ -17,16 +17,36 @@ GET_STATE_TARIFF = 2
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.message.from_user.id
+
+    # Если у пользователя уже есть активная подписка — предложить сразу продлить
+    today = timezone.now().date()
+    try:
+        client = await sync_to_async(Clients.objects.get)(user_id=user_id)
+    except Clients.DoesNotExist:
+        client = None
+
+    if client and client.subscription_end_date and client.subscription_end_date >= today:
+        end_str = client.subscription_end_date.strftime('%-d %B %Y')
+        text = (
+            f"У вас уже есть активная подписка до {end_str}.\n"
+            "Хотите продлить её на новый период?"
+        )
+        keyboard = [
+            [InlineKeyboardButton("✅ Да", callback_data=f"renew_yes_{user_id}")],
+            [InlineKeyboardButton("❌ Нет", callback_data=f"renew_no_{user_id}")]
+        ]
+        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        return GET_STATE_TARIFF
+
     welcome_text = (
-        "Добро пожаловать! 👋\n\n"
-        "ArtBasilioBot – бот VPN-сервиса для безопасной передачи данных в сети интернет 🔒.\n"
-        "Я помогаю вам получить доступ к VPN через простую заявку!\n\n"
-        "Нажмите кнопку ниже, чтобы подать заявку. ⬇️"
-    )
+         "Добро пожаловать! 👋\n\n"
+         "ArtBasilioBot – бот VPN‑сервиса …\n\n"
+         "Нажмите кнопку ниже, чтобы подать заявку. ⬇️"
+     )
     keyboard = [[InlineKeyboardButton("Подать заявку", callback_data="user_request")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+    await update.message.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard))
     return GET_STATE_USER_REQUEST
+
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     support_text = (
