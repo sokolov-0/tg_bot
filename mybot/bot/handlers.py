@@ -26,13 +26,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         client = None
 
     if client and client.subscription_end_date and client.subscription_end_date >= today:
-        end_str = client.subscription_end_date.strftime('%-d %B %Y')
+        end_str = format_date(client.subscription_end_date, format="d MMMM yyyy", locale="ru")
         text = (
-            f"У вас уже есть активная подписка до {end_str}.\n"
-            "Хотите продлить её на новый период?"
+            f"😇 У вас уже есть активная подписка до {end_str}.\n"
+            "Хотите продлить её на новый период? 👍"
         )
         keyboard = [
-            [InlineKeyboardButton("✅ Да", callback_data=f"renew_yes_{user_id}")],
+            [InlineKeyboardButton("✅ Да, хочу!", callback_data=f"renew_yes_{user_id}")],
             [InlineKeyboardButton("❌ Нет", callback_data=f"renew_no_{user_id}")]
         ]
         await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -40,7 +40,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     welcome_text = (
          "Добро пожаловать! 👋\n\n"
-         "ArtBasilioBot – бот VPN‑сервиса …\n\n"
+         "ArtBasilioBot – бот VPN‑сервиса для безопасной передачи данных в сети интернет 🔒.\n"
          "Нажмите кнопку ниже, чтобы подать заявку. ⬇️"
      )
     keyboard = [[InlineKeyboardButton("Подать заявку", callback_data="user_request")]]
@@ -61,7 +61,7 @@ async def subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     try:
         client = await sync_to_async(Clients.objects.get)(user_id=user_id)
     except Clients.DoesNotExist:
-        await update.message.reply_text("У вас пока нет активной подписки. Подайте заявку.")
+        await update.message.reply_text("У вас пока нет активной подписки. Подайте заявку. ✨")
         return
 
     today = timezone.now().date()
@@ -105,7 +105,7 @@ async def handle_user_request(update: Update, context: ContextTypes.DEFAULT_TYPE
             "status": "pending"
         }
     )
-    await query.edit_message_text("Ваша заявка отправлена на рассмотрение. Ожидайте ответа от администратора.")
+    await query.edit_message_text("Ваша заявка отправлена на рассмотрение. Ожидайте ответа от администратора. 😊")
     await notify_admin(user, context)  # уведомление для админов о новой заявке
     return ConversationHandler.END
 
@@ -129,11 +129,11 @@ async def handle_tariff_selection(update: Update, context: ContextTypes.DEFAULT_
 
     # Инструкция по оплате
     payment_instructions = (
-        f"Вы выбрали тариф {tariff_text} — {tariff_amount}.\n\n"
-        "Переведите нужную сумму на счёт Т‑банка, укажите в комментарии свой Telegram-ник.\n"
-        "После перевода нажмите «Я оплатил»."
+        f"✨Вы выбрали тариф {tariff_text} — {tariff_amount}.\n\n"
+        "✅Переведите нужную сумму на номер ➡️ +79991712428.\n Выберете банк получателя Т‑банк, укажите свой Telegram-ник в комментарии к переводу \n(На айоне 🍏: На главной странице в нижнем правом углу раздел Настройки - Мой профиль - имя пользователя  .\n На андройде📱:В левом верхнем углу три полоски - Мой профиль - Имя пользователя ).\n"
+        "💳 После перевода нажмите кнопку снизу «Я оплатил»."
     )
-    markup = InlineKeyboardMarkup([[InlineKeyboardButton("Я оплатил", callback_data=f"user_paid_{user_id}")]])
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton("Я оплатил 💳", callback_data=f"user_paid_{user_id}")]])
     await context.bot.send_message(chat_id=user_id, text=payment_instructions, reply_markup=markup)
     await query.edit_message_text("Инструкция по оплате отправлена в ЛС.")
     return ConversationHandler.END
@@ -169,7 +169,7 @@ async def handle_payment_choice(update: Update, context: ContextTypes.DEFAULT_TY
     client_obj = await sync_to_async(Clients.objects.get)(user_id=user_id)
 
     await query.edit_message_text(
-        "Спасибо! Ваш платеж отмечен как выполненный. Ожидайте подтверждения администратором."
+        "✅ Спасибо! Ваш платеж отмечен как выполненный. Ожидайте подтверждения администратором. ⏳"
     )
 
 
@@ -179,23 +179,30 @@ async def handle_payment_choice(update: Update, context: ContextTypes.DEFAULT_TY
 
     return ConversationHandler.END
 
-async def handle_renewal_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_renewal_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    try:
-        data = query.data.split("_")
-        action, user_id = data[1], int(data[2])
-    except (IndexError, ValueError):
-        await query.edit_message_text("Ошибка обработки запроса")
-        return
+    _, action, user_id_str = query.data.split("_")
+    user_id = int(user_id_str)
+
     if action == "yes":
-        tariff_markup = get_tariff_keyboard(user_id)
-        await context.bot.send_message(chat_id=user_id, text="Выберите тариф для продления подписки:", reply_markup=tariff_markup)
-        await query.edit_message_text("✅ Вы выбрали продлить подписку.")
-    else:
-        await query.edit_message_text("⚠️ Вы отказались от продления подписки. Доступ будет отключен.")
-        logger.info(f"Клиент {user_id} отказался от продления подписки.")
+        # показываем тарифы
+        markup = get_tariff_keyboard(user_id)
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="✅ Вы выбрали продление — выберите тариф:",
+            reply_markup=markup
+        )
+        return ConversationHandler.END
+
+    # action == "no": просто дружелюбно уведомляем и выходим
+    await query.edit_message_text(
+        "Хорошо, продление не требуется. "
+        "Если передумаете — нажмите /start и выберите тариф для продления."
+    )
+    logger.info(f"Клиент {user_id} отказался от продления подписки.")
     return ConversationHandler.END
+
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Диалог завершен.")

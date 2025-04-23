@@ -80,29 +80,38 @@ class Command(BaseCommand):
         # 2. Обработка клиентов с истекшей подпиской (<= сегодня):
         expired_clients = await self.get_expired_clients(today)
         for client in expired_clients:
-            # Если имеется vpn_id, пробуем удалить ключ через VPN API
+            # 1) удаляем ключ на стороне VPN
             if client.vpn_id:
                 delete_url = f"{VPN_BASE_URL}{client.vpn_id}"
                 try:
-                    response = await asyncio.get_running_loop().run_in_executor(
+                    resp = await asyncio.get_running_loop().run_in_executor(
                         None, lambda: httpx.delete(delete_url, verify=False)
                     )
-                    if response.status_code == 204:
+                    if resp.status_code == 204:
                         self.stdout.write(f"[Отключение] Клиент {client.user_id} отключен (vpn_id: {client.vpn_id})")
                     else:
-                        self.stdout.write(f"[Ошибка] Не удалось отключить клиента {client.user_id}, статус: {response.status_code}")
-                        logger.error(f"Ответ сервера: {response.text}")
+                        self.stdout.write(f"[Ошибка] Не удалось отключить клиента {client.user_id}, статус {resp.status_code}")
                 except Exception as e:
                     logger.error(f"Ошибка при отключении клиента {client.user_id}: {e}")
-                    self.stdout.write(f"[Ошибка] Не удалось отключить {client.user_id}: {str(e)}")
-            else:
-                self.stdout.write(f"[Отключение] Клиент {client.user_id} не имеет vpn_id")
-            # Обновляем статус клиента на "pending"
-            client.status = "pending"
+
+            # 2) Очищаем локально все поля ключа
+            client.vpn_id           = ""
+            client.access_url       = ""
+            client.password         = ""
+            client.port             = 0
+            client.method           = ""
+            client.payment_status   = "not_paid"
+            client.status           = "pending"
+            client.tariff = ""
+            # при желании можно и subscription_start_date/subscription_end_date занулять,
+            # но обычно они остаются для истории
+
             await sync_to_async(client.save)()
-            self.stdout.write(f"[Обновление] Клиент {client.user_id} переведен в статус 'pending'")
-            # Отправляем уведомление о том, что подписка закончилась и нужно подать заявку
+            self.stdout.write(f"[Обновление] Клиент {client.user_id}: сброшен ключ и переведен в 'pending'")
+
+            # 3) шлём пользователю уведомление о том, что нужно заново подать заявку
             await self.send_expired_notification(bot, client)
+
 
     def handle(self, *args, **options):
         asyncio.run(self.handle_async())

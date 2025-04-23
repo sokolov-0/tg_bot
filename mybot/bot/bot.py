@@ -39,18 +39,22 @@ def main() -> None:
                 CallbackQueryHandler(handle_tariff_selection, pattern='^tariff_')
             ]
         },
-        fallbacks=[CommandHandler('cancel', cancel)]
+        fallbacks=[CommandHandler('cancel', cancel)],
+        allow_reentry=True
     )
 
     application.add_handler(conv_handler)
     application.add_handler(CallbackQueryHandler(handle_admin_decision, pattern='^admin_'))
     application.add_handler(CallbackQueryHandler(handle_payment_confirmation, pattern='^payment_'))
-    application.add_handler(CallbackQueryHandler(handle_renewal_choice, pattern=r"^renew_(yes|no)_\d+$"))
     application.add_handler(CallbackQueryHandler(handle_tariff_selection, pattern='^tariff_'))
     application.add_handler(CommandHandler('help', help_command))
     application.add_handler(CommandHandler('subscription', subscription))
     application.add_handler(CallbackQueryHandler(handle_user_request, pattern='^user_request$'))
     application.add_handler(CallbackQueryHandler(handle_payment_choice, pattern='^user_paid_'))
+
+    application.add_handler(
+        CallbackQueryHandler(handle_renewal_choice, pattern=r"^renew_(yes|no)_\d+$")
+    )
 
     # Создаем новый event loop, чтобы он был доступен как текущий
     loop = asyncio.new_event_loop()

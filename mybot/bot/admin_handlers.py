@@ -111,7 +111,7 @@ async def handle_admin_decision(update: Update, context: ContextTypes.DEFAULT_TY
         try:
             await context.bot.send_message(
                 chat_id=user_id,
-                text="Ваша заявка одобрена!\nПожалуйста, выберите тариф для подключения:",
+                text="Ваша заявка одобрена 🤝!\nПожалуйста, выберите тариф для подключения ⬇️⬇️:",
                 reply_markup=tariff_markup
             )
             await query.edit_message_text("Заявка одобрена. Тарифы отправлены пользователю.")
@@ -126,7 +126,7 @@ async def handle_admin_decision(update: Update, context: ContextTypes.DEFAULT_TY
         try:
             await context.bot.send_message(
                 chat_id=user_id,
-                text="Ваша заявка отклонена администрацией."
+                text="😪 Ваша заявка отклонена администрацией. Попробуйте в следующий раз ."
             )
             await query.edit_message_text("Заявка отклонена и пользователь уведомлен.")
         except Exception as e:
@@ -199,7 +199,7 @@ async def handle_payment_confirmation(update: Update, context: ContextTypes.DEFA
             text=(
                 "✅ Платёж подтверждён!\n\n"
                 f"Ваш VPN доступ активен до {new_end.strftime('%d.%m.%Y')}.\n\n"
-                f"🔑 Ключ: {access_url}\n\n"
+                f"🔑 Ключ(который Вам нужно будет скопировать): {access_url}\n\n"
                 f"{INSTRUCTION_TEXT}"
             )
         )
@@ -209,7 +209,7 @@ async def handle_payment_confirmation(update: Update, context: ContextTypes.DEFA
         # Платёж не прошёл
         client_obj.payment_status = "failed"
         await sync_to_async(client_obj.save)()
-        await context.bot.send_message(chat_id=user_id, text="Платёж не прошёл. Обратитесь в поддержку.")
+        await context.bot.send_message(chat_id=user_id, text="Платёж не прошёл ❌. Обратитесь в поддержку командой /help ⚙️.")
         await query.edit_message_text("Платёж отклонён.")
 
 
