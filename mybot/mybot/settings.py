@@ -25,7 +25,7 @@ ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS").split(",")))
 
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 YOUR_CHAT_ID = list(map(int, os.getenv("YOUR_CHAT_ID").split(",")))
-
+VPN_BASE_URL = os.getenv("VPN_BASE_URL")
 
 
 

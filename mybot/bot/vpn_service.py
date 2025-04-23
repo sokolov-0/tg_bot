@@ -6,7 +6,7 @@ from django.conf import settings
 from bot.models import Clients
 
 logger = logging.getLogger(__name__)
-VPN_BASE_URL = "https://185.125.203.136:58845/ABPwPgIi2fiDV1uS0LKi5Q/access-keys/"
+VPN_BASE_URL = settings.VPN_BASE_URL
 
 async def create_vpn_key(name: str, user_id: int) -> dict:
     async with httpx.AsyncClient(verify=False) as client:
