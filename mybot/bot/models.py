@@ -5,7 +5,7 @@ from dateutil.relativedelta import relativedelta
 
 class Clients(models.Model):
     user_id = models.BigIntegerField(verbose_name="ID пользователя")
-    vpn_id = models.CharField(max_length=255, unique=True)
+    vpn_id = models.CharField(max_length=255, unique=True,null=True, blank=True)
     name = models.CharField(max_length=100, verbose_name="Имя пользователя")
     password = models.CharField(max_length=255, verbose_name="Пароль")
     port = models.IntegerField(verbose_name="Порт", null=True, blank=True, default=0)
