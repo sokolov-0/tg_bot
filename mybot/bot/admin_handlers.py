@@ -9,6 +9,7 @@ from bot.vpn_service import create_vpn_key
 from mybot.settings import ADMIN_IDS
 from django.utils import timezone
 from dateutil.relativedelta import relativedelta
+from bot.instructions import INSTRUCTION_TEXT
 
 
 logger = logging.getLogger(__name__)
@@ -193,15 +194,27 @@ async def handle_payment_confirmation(update: Update, context: ContextTypes.DEFA
             access_url = client_obj.access_url
 
         # 5) Отправляем пользователю доступ
-        from bot.instructions import INSTRUCTION_TEXT
+        # Сначала – чек-лист и дата
+        text = (
+            "✅ Платёж подтверждён!\n\n"
+            f"Ваш VPN доступ активен до {new_end.strftime('%d.%m.%Y')}.\n\n"
+            f"{INSTRUCTION_TEXT}"
+        )
+        await context.bot.send_message(chat_id=user_id, text=text)
+
+        # Затем – ключ в моноширинном блоке и кнопка «Скопировать»
+        key_msg = f"🔑 Ваш ключ для копирования:\n```\n{access_url}\n```"
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                "Скопировать ключ",
+                switch_inline_query_current_chat=access_url
+            )
+        ]])
         await context.bot.send_message(
             chat_id=user_id,
-            text=(
-                "✅ Платёж подтверждён!\n\n"
-                f"Ваш VPN доступ активен до {new_end.strftime('%d.%m.%Y')}.\n\n"
-                f"🔑 Ключ(который Вам нужно будет скопировать): {access_url}\n\n"
-                f"{INSTRUCTION_TEXT}"
-            )
+            text=key_msg,
+            parse_mode="Markdown",
+            reply_markup=kb
         )
         await query.edit_message_text("Платёж подтверждён, клиенту отправлены данные.")
 

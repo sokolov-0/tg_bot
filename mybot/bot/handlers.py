@@ -62,7 +62,7 @@ async def subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         client = await sync_to_async(Clients.objects.get)(user_id=user_id)
     except Clients.DoesNotExist:
         await update.message.reply_text("У вас пока нет активной подписки. Подайте заявку. ✨")
-        return
+        return ConversationHandler.END   # <— вот это обязательно
 
     today = timezone.now().date()
     if client.subscription_end_date:

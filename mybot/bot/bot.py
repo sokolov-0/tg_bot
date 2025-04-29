@@ -1,22 +1,13 @@
-# bot.py
-import logging
-import asyncio
 from telegram.ext import (
     Application, CommandHandler, ConversationHandler, CallbackQueryHandler
 )
-from django.conf import settings
-from bot.handlers import (
-    start,
-    handle_user_request,
-    handle_tariff_selection,
-    cancel,
-    handle_renewal_choice,
-    help_command,
-    subscription,
-    handle_payment_choice
-)
+from bot.handlers import start, handle_user_request, handle_tariff_selection, cancel, help_command, subscription, handle_payment_choice, handle_renewal_choice
 from bot.admin_handlers import handle_admin_decision, handle_payment_confirmation
 from bot.utils import GET_STATE_USER_REQUEST, GET_STATE_TARIFF
+import logging, asyncio
+from django.conf import settings
+
+import logging
 
 logging.basicConfig(
     filename='bot.log',
@@ -24,10 +15,12 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-TOKEN = settings.TOKEN
 
-def main() -> None:
-    application = Application.builder().token(TOKEN).build()
+async def error_handler(update, context):
+    logger.exception("Unhandled exception:", exc_info=context.error)
+
+def main():
+    application = Application.builder().token(settings.TOKEN).build()
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
@@ -39,7 +32,10 @@ def main() -> None:
                 CallbackQueryHandler(handle_tariff_selection, pattern='^tariff_')
             ]
         },
-        fallbacks=[CommandHandler('cancel', cancel)],
+        fallbacks=[
+            CommandHandler('cancel', cancel),
+            CommandHandler('subscription', subscription)  # fallback для подписки
+        ],
         allow_reentry=True
     )
 
@@ -48,27 +44,24 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(handle_payment_confirmation, pattern='^payment_'))
     application.add_handler(CallbackQueryHandler(handle_tariff_selection, pattern='^tariff_'))
     application.add_handler(CommandHandler('help', help_command))
-    application.add_handler(CommandHandler('subscription', subscription))
+    application.add_handler(CommandHandler('subscription', subscription))  # на всякий случай ещё раз вне conv
     application.add_handler(CallbackQueryHandler(handle_user_request, pattern='^user_request$'))
     application.add_handler(CallbackQueryHandler(handle_payment_choice, pattern='^user_paid_'))
+    application.add_handler(CallbackQueryHandler(handle_renewal_choice, pattern=r"^renew_(yes|no)_\d+$"))
 
-    application.add_handler(
-        CallbackQueryHandler(handle_renewal_choice, pattern=r"^renew_(yes|no)_\d+$")
-    )
+    application.add_error_handler(error_handler)
 
-    # Создаем новый event loop, чтобы он был доступен как текущий
+    # Регистрируем команды у бота
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-
-    async def set_commands():
-        commands = [
-            ("start", "🚀 Запуск бота"),
-            ("help", "⚙️ Информация техподдержки"),
+    async def set_bot_commands():
+        await application.bot.set_my_commands([
+            ("start", "🚀 Запустить бота"),
+            ("help", "⚙️ Техподдержка"),
             ("subscription", "📊 Статус подписки")
-        ]
-        await application.bot.set_my_commands(commands)
+        ])
+    loop.run_until_complete(set_bot_commands())
 
-    loop.run_until_complete(set_commands())
     application.run_polling()
 
 if __name__ == '__main__':
