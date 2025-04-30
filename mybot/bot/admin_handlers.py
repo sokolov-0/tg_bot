@@ -203,12 +203,9 @@ async def handle_payment_confirmation(update: Update, context: ContextTypes.DEFA
         await context.bot.send_message(chat_id=user_id, text=text)
 
         # Затем – ключ в моноширинном блоке и кнопка «Скопировать»
-        key_msg = f"🔑 Ваш ключ для копирования:\n```\n{access_url}\n```"
+        key_msg = f"🔑 Ваш ключ для копирования(просто кликните на него, чтобы скопировать📲 ):\n```\n{access_url}\n```"
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton(
-                "Скопировать ключ",
-                switch_inline_query_current_chat=access_url
-            )
+            
         ]])
         await context.bot.send_message(
             chat_id=user_id,
