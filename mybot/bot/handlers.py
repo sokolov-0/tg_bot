@@ -36,7 +36,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             [InlineKeyboardButton("❌ Нет", callback_data=f"renew_no_{user_id}")]
         ]
         await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-        return GET_STATE_TARIFF
+        return ConversationHandler.END
 
     welcome_text = (
          "Добро пожаловать! 👋\n\n"
@@ -45,7 +45,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
      )
     keyboard = [[InlineKeyboardButton("Подать заявку", callback_data="user_request")]]
     await update.message.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard))
-    return GET_STATE_USER_REQUEST
+    return ConversationHandler.END
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -56,13 +56,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
     await update.message.reply_text(support_text)
 
-async def subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.message.from_user.id
     try:
         client = await sync_to_async(Clients.objects.get)(user_id=user_id)
     except Clients.DoesNotExist:
         await update.message.reply_text("У вас пока нет активной подписки. Подайте заявку. ✨")
-        return ConversationHandler.END   # <— вот это обязательно
+        return ConversationHandler.END
 
     today = timezone.now().date()
     if client.subscription_end_date:
@@ -72,7 +72,9 @@ async def subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         days_left, formatted_end = None, "не установлена"
 
     if days_left is None:
-        reply_text = "У вас пока не оформлена подписка."
+        await update.message.reply_text("У вас пока не оформлена подписка.")
+        return ConversationHandler.END
+
     elif days_left > 0:
         reply_text = (
             f"Ваша подписка активна и истекает {formatted_end}.\n"
@@ -85,14 +87,15 @@ async def subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 [InlineKeyboardButton("❌ Нет", callback_data=f"renew_no_{user_id}")]
             ]
             await update.message.reply_text(reply_text, reply_markup=InlineKeyboardMarkup(keyboard))
-            return
+            return ConversationHandler.END
+        await update.message.reply_text(reply_text)
+        return ConversationHandler.END
+
     else:
         reply_text = "❌ Ваша подписка закончилась, чтобы продолжить, подайте новую заявку."
         keyboard = [[InlineKeyboardButton("Подать заявку", callback_data="user_request")]]
         await update.message.reply_text(reply_text, reply_markup=InlineKeyboardMarkup(keyboard))
-        return
-
-    await update.message.reply_text(reply_text)
+        return ConversationHandler.END
 
 async def handle_user_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query

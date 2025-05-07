@@ -34,17 +34,19 @@ def main():
         },
         fallbacks=[
             CommandHandler('cancel', cancel),
-            CommandHandler('subscription', subscription)  # fallback для подписки
-        ],
+            CommandHandler('subscription', subscription),  # ✅ ДОБАВЛЕНО
+            CommandHandler('start', start),  # ✅ опционально
+            ],
         allow_reentry=True
     )
 
     application.add_handler(conv_handler)
+    application.add_handler(CommandHandler('start', start))
+    application.add_handler(CommandHandler('subscription', subscription))
     application.add_handler(CallbackQueryHandler(handle_admin_decision, pattern='^admin_'))
     application.add_handler(CallbackQueryHandler(handle_payment_confirmation, pattern='^payment_'))
     application.add_handler(CallbackQueryHandler(handle_tariff_selection, pattern='^tariff_'))
     application.add_handler(CommandHandler('help', help_command))
-    application.add_handler(CommandHandler('subscription', subscription))  # на всякий случай ещё раз вне conv
     application.add_handler(CallbackQueryHandler(handle_user_request, pattern='^user_request$'))
     application.add_handler(CallbackQueryHandler(handle_payment_choice, pattern='^user_paid_'))
     application.add_handler(CallbackQueryHandler(handle_renewal_choice, pattern=r"^renew_(yes|no)_\d+$"))
