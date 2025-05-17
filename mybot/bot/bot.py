@@ -1,5 +1,5 @@
 from telegram.ext import (
-    Application, CommandHandler, ConversationHandler, CallbackQueryHandler
+    Application, CommandHandler, ConversationHandler, CallbackQueryHandler,  JobQueue
 )
 from bot.handlers import start, handle_user_request, handle_tariff_selection, cancel, help_command, subscription, handle_payment_choice, handle_renewal_choice
 from bot.admin_handlers import handle_admin_decision, handle_payment_confirmation
@@ -20,7 +20,11 @@ async def error_handler(update, context):
     logger.exception("Unhandled exception:", exc_info=context.error)
 
 def main():
-    application = Application.builder().token(settings.TOKEN).build()
+    job_queue = JobQueue()
+    application = Application.builder()\
+        .token(settings.TOKEN)\
+        .job_queue(job_queue)\
+        .build()
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
@@ -37,7 +41,8 @@ def main():
             CommandHandler('subscription', subscription),  # ✅ ДОБАВЛЕНО
             CommandHandler('start', start),  # ✅ опционально
             ],
-        allow_reentry=True
+        allow_reentry=True,
+        conversation_timeout=30 * 60
     )
 
     application.add_handler(conv_handler)

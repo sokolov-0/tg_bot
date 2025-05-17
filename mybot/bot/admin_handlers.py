@@ -101,9 +101,13 @@ async def handle_admin_decision(update: Update, context: ContextTypes.DEFAULT_TY
             return ConversationHandler.END
 
        # === Ставим только статус, без .save(), иначе сработает renew_subscription() преждевременно ===
-        await sync_to_async(
-            Clients.objects.filter(user_id=user_id).update
+        updated = await sync_to_async(
+            Clients.objects.filter(user_id=user_id, status="pending").update
         )(status="approved")
+        if not updated:
+            return await query.edit_message_text(
+                "⚠️ Эту заявку уже обработал другой администратор."
+            )
 
         logger.info(f"Заявка {user_id} одобрена, даты: {client_obj.subscription_start_date}–{client_obj.subscription_end_date}")
 
@@ -123,7 +127,13 @@ async def handle_admin_decision(update: Update, context: ContextTypes.DEFAULT_TY
 
     elif decision == "reject":
         # простое обновление статуса, без логики дат
-        await sync_to_async(Clients.objects.filter(user_id=user_id).update)(status="rejected")
+        updated = await sync_to_async(
+            Clients.objects.filter(user_id=user_id, status="pending").update
+        )(status="rejected")
+        if not updated:
+            return await query.edit_message_text(
+                "⚠️ Эту заявку уже обработал другой администратор."
+            )
         try:
             await context.bot.send_message(
                 chat_id=user_id,
@@ -139,47 +149,56 @@ async def handle_admin_decision(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text("Неверное решение.")
         return
 
+from django.db import transaction
+
 async def handle_payment_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     _, result, user_id_str = query.data.split("_")
     user_id = int(user_id_str)
 
-    # Только админы
     if query.from_user.id not in ADMIN_IDS:
         return await query.answer("Нет прав.", show_alert=True)
 
-    # Забираем клиента
-    client_obj = await sync_to_async(Clients.objects.get)(user_id=user_id)
-
     if result == "success":
-        # 1) Обновляем статус платежа
-        client_obj.payment_status = "paid"
+        # ———————————————  
+        # 1) Атомарно обновляем статус, только если он "awaiting_verification"
+        updated = await sync_to_async(
+            Clients.objects.filter(user_id=user_id, payment_status="awaiting_verification").update
+        )(payment_status="paid")
+        if not updated:
+            return await query.edit_message_text("⚠️ Этот платёж уже обработан другим администратором.")
+        # ———————————————
 
-        # 2) Рассчитываем новый период подписки
+        # 2) Перезагружаем свежий клиент из БД
+        client_obj = await sync_to_async(Clients.objects.get)(user_id=user_id)
+
+        # 3) Рассчитываем новый период подписки
         months = {"1 месяц": 1, "3 месяца": 3, "6 месяцев": 6}.get(client_obj.tariff, 0)
         today = timezone.now().date()
-
         if client_obj.subscription_end_date and client_obj.subscription_end_date > today:
-            # продление от текущего конца
             new_start = client_obj.subscription_end_date
-            new_end = client_obj.subscription_end_date + relativedelta(months=months)
         else:
-            # первый платёж или просроченная подписка
             new_start = today
-            new_end = today + relativedelta(months=months)
+        new_end = new_start + relativedelta(months=months)
 
-        client_obj.subscription_start_date = new_start
-        client_obj.subscription_end_date = new_end
+        # 4) Сохраняем даты в БД
+        await sync_to_async(
+            Clients.objects.filter(user_id=user_id).update
+        )(
+            subscription_start_date=new_start,
+            subscription_end_date=new_end
+        )
 
-        # 3) Сохраняем даты и статус
-        await sync_to_async(client_obj.save)()
+        # 5) Загрузка обновлённого объекта (чтобы увидеть access_url)
+        client_obj = await sync_to_async(Clients.objects.get)(user_id=user_id)
 
-        # 4) Генерируем ключ, только если его ещё нет
+        # 6) Генерируем ключ **только если** его реально нет
         if not client_obj.access_url:
             key_data = await create_vpn_key(name=client_obj.name, user_id=client_obj.user_id)
             if not key_data:
                 return await query.edit_message_text("Ошибка создания VPN-ключа.")
+            # Сохраняем параметры ключа
             await sync_to_async(
                 Clients.objects.filter(user_id=user_id).update
             )(
@@ -193,8 +212,7 @@ async def handle_payment_confirmation(update: Update, context: ContextTypes.DEFA
         else:
             access_url = client_obj.access_url
 
-        # 5) Отправляем пользователю доступ
-        # Сначала – чек-лист и дата
+        # 7) Отправляем пользователю данные
         text = (
             "✅ Платёж подтверждён!\n\n"
             f"Ваш VPN доступ активен до {new_end.strftime('%d.%m.%Y')}.\n\n"
@@ -202,25 +220,26 @@ async def handle_payment_confirmation(update: Update, context: ContextTypes.DEFA
         )
         await context.bot.send_message(chat_id=user_id, text=text)
 
-        # Затем – ключ в моноширинном блоке и кнопка «Скопировать»
-        key_msg = f"🔑 Ваш ключ для копирования(просто кликните на него, чтобы скопировать📲 ):\n```\n{access_url}\n```"
-        kb = InlineKeyboardMarkup([[
-            
-        ]])
+        key_msg = (
+            "🔑 Ваш ключ для копирования(просто кликните на него, чтобы скопировать📲 ):\n"
+            f"```\n{access_url}\n```"
+        )
         await context.bot.send_message(
             chat_id=user_id,
             text=key_msg,
-            parse_mode="Markdown",
-            reply_markup=kb
+            parse_mode="Markdown"
         )
         await query.edit_message_text("Платёж подтверждён, клиенту отправлены данные.")
-
     else:
-        # Платёж не прошёл
-        client_obj.payment_status = "failed"
-        await sync_to_async(client_obj.save)()
+        # аналогично для отказа: только UPDATE и return, без повторного создания
+        updated = await sync_to_async(
+            Clients.objects.filter(user_id=user_id, payment_status="awaiting_verification").update
+        )(payment_status="failed")
+        if not updated:
+            return await query.edit_message_text("⚠️ Этот платёж уже обработан другим администратором.")
         await context.bot.send_message(chat_id=user_id, text="Платёж не прошёл ❌. Обратитесь в поддержку командой /help ⚙️.")
         await query.edit_message_text("Платёж отклонён.")
+
 
 
 async def notify_admin_payment(client_obj, context: ContextTypes.DEFAULT_TYPE):
